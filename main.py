@@ -7,12 +7,14 @@ Original model (not the starter persistence baseline):
     x = ln(1 + hours since 2026-11-19T00:00Z). The per-trophy OLS slope is
     shrunk hierarchically toward its tier mean and the global mean slope,
     anchored at the last observed logit, with the total drift capped.
-  * The predictive spread on the logit scale combines (a) a structural floor
-    sigma(h) = sqrt(A^2 + (B*sqrt(h_days))^2) so flat/short histories still get
-    an honest wide spread, (b) realised snapshot-to-snapshot logit volatility
-    pooled across trophies, and (c) a rolling-origin backtest inside the given
-    history (fit on prefixes, score later snapshots, pool errors by horizon).
-    The widest of the three (with damping on the empirical terms) wins, capped.
+  * The predictive spread on the logit scale is a structural floor
+    sigma(h) = sqrt(A^2 + (B*h_days**0.35)^2) so flat/short histories still
+    get an honest wide spread. Two empirical channels (realised
+    snapshot-to-snapshot logit volatility pooled across trophies, and a
+    rolling-origin backtest inside the given history) are still computed
+    but enter with damping 0.0 since Round 3: backtests on three synthetic
+    world families plus the live recorded series showed they never bound
+    in smooth worlds and misfire under shocked dynamics. Capped at 1.4.
   * Quantiles are inv_logit(mu + z_tau * sigma) with z for the case levels.
 
 Deterministic: no randomness, no wall clock, sorted file iteration, fixed
@@ -36,14 +38,21 @@ LEVELS = [0.05, 0.25, 0.5, 0.75, 0.95]
 Z = [-1.6448536269514722, -0.6744897501960817, 0.0, 0.6744897501960817, 1.6448536269514722]
 EPOCH = datetime(2026, 11, 19, 0, 0, 0, tzinfo=timezone.utc).timestamp()
 
-# Model constants (Round 2, tuned by simulation backtests; see BACKTEST.md).
+# Model constants (Round 3, re-tuned by simulation backtests on three world
+# families + real-series tests; see BACKTEST.md). Round 3 changed only the
+# spread: sigma grows as days**sigma_pow (slower than sqrt, so the long final
+# horizon gets a tighter spread while sub-day horizons stay slightly wider
+# than Round 2), and the empirical sigma channels are off (emp_damp 0) —
+# at Round 2's 0.10 they never bound in smooth worlds and actively hurt
+# under shocked/Gompertz dynamics.
 PARAMS = {
     "shrink_k": 4.0,        # pseudo-count pulling a trophy slope to its prior
     "slope_clamp": 2.5,     # |slope| cap, logit per unit log-time
     "drift_cap": 1.2,       # |total drift| cap in logit units
     "floor_a": 0.15,        # structural spread intercept (refresh-jump risk)
-    "floor_b": 0.20,        # structural spread per sqrt(day)
-    "emp_damp": 0.10,       # damping on empirical (vol / rolling-origin) sigma
+    "floor_b": 0.20,        # structural spread scale (times days**sigma_pow)
+    "sigma_pow": 0.35,      # horizon exponent of the structural spread
+    "emp_damp": 0.0,        # damping on empirical (vol / rolling-origin) sigma
     "sigma_cap": 1.4,
     "fallback_b": 0.9,      # fallback persistence spread per sqrt(day)
     "fallback_a": 0.4,
@@ -315,7 +324,7 @@ def model_forecast(case):
             c2 = sum((e * e) / h for h, e in errs) / len(errs)
             ro_sigma = math.sqrt(c2) * math.sqrt(horizon_days)
 
-    floor_sigma = math.sqrt(PARAMS["floor_a"] ** 2 + (PARAMS["floor_b"] * math.sqrt(horizon_days)) ** 2)
+    floor_sigma = math.sqrt(PARAMS["floor_a"] ** 2 + (PARAMS["floor_b"] * (horizon_days ** PARAMS["sigma_pow"])) ** 2)
     sigma = max(floor_sigma, PARAMS["emp_damp"] * vol_sigma, PARAMS["emp_damp"] * ro_sigma)
     sigma = min(sigma, PARAMS["sigma_cap"])
 
